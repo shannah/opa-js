@@ -133,11 +133,28 @@
         if (res.ok) return await res.text();
       } catch (_) { /* CORS likely blocked it */ }
 
-      // Fall back to allorigins CORS proxy
-      const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-      const res = await fetch(proxyUrl);
-      if (!res.ok) throw new Error(`Failed to fetch feed (status ${res.status})`);
-      return await res.text();
+      // CORS proxies — try each in order until one works.
+      // The allorigins /get endpoint wraps the response in JSON with proper CORS headers.
+      const proxies = [
+        u => [`https://api.allorigins.win/get?url=${encodeURIComponent(u)}`, 'json'],
+        u => [`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`, 'text'],
+      ];
+      for (const makeUrl of proxies) {
+        try {
+          const [proxyUrl, mode] = makeUrl(url);
+          const res = await fetch(proxyUrl);
+          if (!res.ok) continue;
+          if (mode === 'json') {
+            const json = await res.json();
+            return json.contents;
+          }
+          return await res.text();
+        } catch (_) { continue; }
+      }
+      throw new Error(
+        'Could not fetch the RSS feed. All CORS proxies failed. ' +
+        'Try a feed URL that allows cross-origin requests, or run a local proxy.'
+      );
     }
 
     window.run = async function run() {
