@@ -1,9 +1,10 @@
-import { OpaArchive, SessionHistory } from '../src/index.js';
+import { OpaArchive, SessionHistory, verifyOpaArchive } from '../src/index.js';
 import { unzipSync, strFromU8 } from 'fflate';
 import { strict as assert } from 'node:assert';
 import { mkdtemp, writeFile, mkdir, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execSync } from 'node:child_process';
 
 let passed = 0;
 let failed = 0;
@@ -260,6 +261,152 @@ await test('toBuffer returns a Node.js Buffer', () => {
   assert.equal(buf[0], 0x50); // P
   assert.equal(buf[1], 0x4b); // K
 });
+
+// ── Signing ──
+
+// Generate a test RSA key pair and self-signed certificate
+const testKeyDir = await mkdtemp(join(tmpdir(), 'opa-keys-'));
+const keyPath = join(testKeyDir, 'test.key');
+const certPath = join(testKeyDir, 'test.crt');
+execSync(`openssl req -x509 -newkey rsa:2048 -keyout "${keyPath}" -out "${certPath}" -days 1 -nodes -subj "/CN=OPA Test" 2>/dev/null`);
+const testPrivateKey = (await readFile(keyPath, 'utf-8'));
+const testCertificate = (await readFile(certPath, 'utf-8'));
+
+console.log('\nSigning tests\n');
+
+await test('creates a signed archive with SIGNATURE.SF and SIGNATURE.RSA', async () => {
+  const archive = new OpaArchive({ title: 'Signed Test', createdBy: 'opa-js-test' });
+  archive.setPrompt('Signed prompt.');
+  archive.addDataFile('report.csv', 'a,b\n1,2');
+
+  const data = await archive.toSignedUint8Array(testPrivateKey, testCertificate);
+  const zip = unzipSync(data);
+
+  // Should have signature files
+  assert(zip['META-INF/SIGNATURE.SF'], 'Missing SIGNATURE.SF');
+  assert(zip['META-INF/SIGNATURE.RSA'], 'Missing SIGNATURE.RSA');
+
+  // SIGNATURE.SF should contain expected fields
+  const sf = strFromU8(zip['META-INF/SIGNATURE.SF']);
+  assert(sf.includes('Signature-Version: 1.0'), 'Missing Signature-Version');
+  assert(sf.includes('SHA-256-Digest-Manifest:'), 'Missing manifest digest');
+  assert(sf.includes('Name: prompt.md'), 'Missing prompt.md section');
+  assert(sf.includes('Name: data/report.csv'), 'Missing data/report.csv section');
+});
+
+await test('manifest includes per-entry SHA-256 digest sections when signed', async () => {
+  const archive = new OpaArchive();
+  archive.setPrompt('test');
+  archive.addDataFile('info.txt', 'hello');
+
+  const data = await archive.toSignedUint8Array(testPrivateKey, testCertificate);
+  const zip = unzipSync(data);
+  const manifest = strFromU8(zip['META-INF/MANIFEST.MF']);
+
+  assert(manifest.includes('Name: prompt.md'), 'Missing prompt.md entry section');
+  assert(manifest.includes('Name: data/info.txt'), 'Missing data/info.txt entry section');
+  assert(manifest.includes('SHA-256-Digest:'), 'Missing digest in entry section');
+});
+
+await test('verifyOpaArchive returns valid for correctly signed archive', async () => {
+  const archive = new OpaArchive({ title: 'Verify Test' });
+  archive.setPrompt('Verifiable prompt.');
+  archive.addDataFile('data.txt', 'some data');
+
+  const data = await archive.toSignedUint8Array(testPrivateKey, testCertificate);
+  const result = await verifyOpaArchive(data, testCertificate);
+
+  assert.equal(result.valid, true, `Expected valid but got: ${result.error}`);
+  assert.equal(result.signed, true);
+});
+
+await test('verifyOpaArchive detects tampered prompt', async () => {
+  const archive = new OpaArchive();
+  archive.setPrompt('Original prompt.');
+
+  const data = await archive.toSignedUint8Array(testPrivateKey, testCertificate);
+  const zip = unzipSync(data);
+
+  // Tamper with the prompt
+  zip['prompt.md'] = new TextEncoder().encode('Tampered prompt!');
+
+  // Re-zip (need fflate zipSync)
+  const { zipSync: rezip } = await import('fflate');
+  const tampered = rezip(zip, { level: 6 });
+
+  const result = await verifyOpaArchive(tampered, testCertificate);
+  assert.equal(result.valid, false);
+  assert.equal(result.signed, true);
+});
+
+await test('verifyOpaArchive reports unsigned archives', async () => {
+  const archive = new OpaArchive();
+  archive.setPrompt('Unsigned.');
+
+  const data = archive.toUint8Array();
+  const result = await verifyOpaArchive(data);
+
+  assert.equal(result.signed, false);
+  assert.equal(result.valid, true); // unsigned is not invalid, just unsigned
+});
+
+await test('verifyOpaArchive rejects wrong certificate', async () => {
+  const archive = new OpaArchive();
+  archive.setPrompt('test');
+
+  const data = await archive.toSignedUint8Array(testPrivateKey, testCertificate);
+
+  // Generate a different certificate
+  const key2Path = join(testKeyDir, 'other.key');
+  const cert2Path = join(testKeyDir, 'other.crt');
+  execSync(`openssl req -x509 -newkey rsa:2048 -keyout "${key2Path}" -out "${cert2Path}" -days 1 -nodes -subj "/CN=Other" 2>/dev/null`);
+  const otherCert = await readFile(cert2Path, 'utf-8');
+
+  const result = await verifyOpaArchive(data, otherCert);
+  assert.equal(result.valid, false);
+  assert.equal(result.signed, true);
+});
+
+await test('writeSignedToFile writes a valid signed archive', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'opa-signed-'));
+  const outPath = join(dir, 'signed.opa');
+  try {
+    const archive = new OpaArchive({ title: 'File Signing Test' });
+    archive.setPrompt('Signed to disk.');
+    await archive.writeSignedToFile(outPath, testPrivateKey, testCertificate);
+
+    const bytes = await readFile(outPath);
+    const result = await verifyOpaArchive(new Uint8Array(bytes), testCertificate);
+    assert.equal(result.valid, true, `Expected valid but got: ${result.error}`);
+    assert.equal(result.signed, true);
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
+await test('signed archive with session history verifies correctly', async () => {
+  const session = new SessionHistory('test-session');
+  session.addMessage('user', 'Hello');
+  session.addMessage('assistant', 'Hi!');
+
+  const archive = new OpaArchive();
+  archive.setPrompt('Continue.');
+  archive.setSession(session);
+  archive.addDataFile('notes.txt', 'Some notes');
+
+  const data = await archive.toSignedUint8Array(testPrivateKey, testCertificate);
+  const result = await verifyOpaArchive(data, testCertificate);
+  assert.equal(result.valid, true, `Expected valid but got: ${result.error}`);
+
+  // Verify all expected entries are in SIGNATURE.SF
+  const zip = unzipSync(data);
+  const sf = strFromU8(zip['META-INF/SIGNATURE.SF']);
+  assert(sf.includes('Name: session/history.json'));
+  assert(sf.includes('Name: data/notes.txt'));
+});
+
+// Cleanup test keys
+await rm(testKeyDir, { recursive: true });
 
 // ── Summary ──
 

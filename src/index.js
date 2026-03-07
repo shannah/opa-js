@@ -1,4 +1,5 @@
 import { zipSync, strToU8 } from 'fflate';
+import { signArchiveFiles, verifyArchive } from './signing.js';
 
 const OPA_VERSION = '0.1';
 const MANIFEST_VERSION = '1.0';
@@ -214,7 +215,7 @@ export class OpaArchive {
 
   // ── Build ──
 
-  /** Build the manifest string. */
+  /** Build the manifest main section string. */
   _buildManifest() {
     const lines = [];
     lines.push(formatManifestLine('Manifest-Version', MANIFEST_VERSION));
@@ -231,19 +232,13 @@ export class OpaArchive {
     return lines.join('\r\n') + '\r\n';
   }
 
-  /**
-   * Build the archive and return it as a Uint8Array (works everywhere).
-   * @returns {Uint8Array}
-   */
-  toUint8Array() {
+  /** Collect all archive content files (everything except META-INF). */
+  _collectFiles() {
     if (!this._promptContent) {
       throw new Error('Prompt content is required. Call setPrompt() before building.');
     }
 
     const files = {};
-
-    // META-INF/MANIFEST.MF
-    files['META-INF/MANIFEST.MF'] = encode(this._buildManifest());
 
     // Prompt file
     files[this._promptFile] = encode(this._promptContent);
@@ -265,6 +260,29 @@ export class OpaArchive {
       files[`data/${relPath}`] = data;
     }
 
+    return files;
+  }
+
+  /**
+   * Build the archive and return it as a Uint8Array (works everywhere).
+   * @returns {Uint8Array}
+   */
+  toUint8Array() {
+    const files = this._collectFiles();
+    files['META-INF/MANIFEST.MF'] = encode(this._buildManifest());
+    return zipSync(files, { level: 6 });
+  }
+
+  /**
+   * Build a signed archive and return it as a Uint8Array (Node.js only).
+   * @param {string} privateKeyPEM - PEM-encoded private key (RSA or EC).
+   * @param {string} certificatePEM - PEM-encoded X.509 certificate.
+   * @returns {Promise<Uint8Array>}
+   */
+  async toSignedUint8Array(privateKeyPEM, certificatePEM) {
+    const files = this._collectFiles();
+    const mainManifest = this._buildManifest();
+    await signArchiveFiles(files, mainManifest, privateKeyPEM, certificatePEM, this._createdBy);
     return zipSync(files, { level: 6 });
   }
 
@@ -293,4 +311,28 @@ export class OpaArchive {
     const fs = await import('node:fs/promises');
     await fs.writeFile(outputPath, this.toUint8Array());
   }
+
+  /**
+   * Write a signed archive to a file (Node.js only).
+   * @param {string} outputPath - Destination file path.
+   * @param {string} privateKeyPEM - PEM-encoded private key.
+   * @param {string} certificatePEM - PEM-encoded X.509 certificate.
+   */
+  async writeSignedToFile(outputPath, privateKeyPEM, certificatePEM) {
+    const fs = await import('node:fs/promises');
+    await fs.writeFile(outputPath, await this.toSignedUint8Array(privateKeyPEM, certificatePEM));
+  }
+}
+
+/**
+ * Verify a signed OPA archive.
+ * @param {Uint8Array} data - The archive bytes.
+ * @param {string} [certificatePEM] - PEM certificate to verify the signature against.
+ *   If omitted, only digest integrity is checked.
+ * @returns {Promise<{ valid: boolean, signed: boolean, error?: string }>}
+ */
+export async function verifyOpaArchive(data, certificatePEM) {
+  const { unzipSync: unzip } = await import('fflate');
+  const entries = unzip(data);
+  return verifyArchive(entries, certificatePEM);
 }

@@ -12,7 +12,7 @@
     "dist/"
   ],
   "scripts": {
-    "build": "esbuild src/index.js --bundle --format=esm --minify --external:node:fs/promises --external:node:path --outfile=dist/opa.min.js && esbuild src/index.js --bundle --format=iife --global-name=OPA --minify --external:node:fs/promises --external:node:path --outfile=dist/opa.umd.min.js",
+    "build": "esbuild src/index.js --bundle --format=esm --minify --external:node:fs/promises --external:node:path --external:node:crypto --outfile=dist/opa.min.js && esbuild src/index.js --bundle --format=iife --global-name=OPA --minify --external:node:fs/promises --external:node:path --external:node:crypto --outfile=dist/opa.umd.min.js",
     "test": "node test/test.js",
     "example": "npm run build && node examples/serve.js"
   },

@@ -1,6 +1,6 @@
 # opa-js
 
-Minimal JavaScript library for creating [Open Prompt Archive (OPA)](./RFC-0001-OPA.md) files. Works in the browser and Node.js.
+Minimal JavaScript library for creating [Open Prompt Archive (OPA)](https://github.com/shannah/opa-spec) files. Works in the browser and Node.js. Supports digital signing and verification per the [OPA security spec](https://github.com/shannah/opa-spec/blob/main/specification/security.md).
 
 An OPA file is a ZIP archive that packages an AI prompt together with data files and optional session history into a single portable file. Any OPA-compatible client can open and execute it.
 
@@ -22,6 +22,29 @@ archive.setPrompt('Summarize the CSV files in `data/`.');
 archive.addDataFile('q1.csv', 'region,sales\nnorth,100\nsouth,200');
 
 await archive.writeToFile('sales-summary.opa');
+```
+
+### Signed archive (Node.js)
+
+```js
+import { readFileSync } from 'fs';
+import { OpaArchive, verifyOpaArchive } from 'opa-js';
+
+const privateKey = readFileSync('key.pem', 'utf-8');
+const certificate = readFileSync('cert.pem', 'utf-8');
+
+// Create and sign
+const archive = new OpaArchive({ title: 'Signed Task' });
+archive.setPrompt('Analyze the data.');
+archive.addDataFile('report.csv', csvData);
+
+await archive.writeSignedToFile('task.opa', privateKey, certificate);
+
+// Verify
+const bytes = readFileSync('task.opa');
+const result = await verifyOpaArchive(new Uint8Array(bytes), certificate);
+console.log(result);
+// { valid: true, signed: true }
 ```
 
 ### Browser (with bundler — Vite, webpack, etc.)
@@ -96,17 +119,46 @@ All options are optional.
 
 #### Session history
 
-- **`setSession(session)`** — Attach session history. Pass a `SessionHistory` instance or a plain object matching the [schema](./RFC-0001-OPA.md#7-session-history).
+- **`setSession(session)`** — Attach session history. Pass a `SessionHistory` instance or a plain object matching the [session history schema](https://github.com/shannah/opa-spec/blob/main/specification/session-history.md).
 - **`addSessionAttachment(path, content)`** — Add a file under `session/attachments/`.
 
-#### Output
+#### Output (unsigned)
 
 - **`toUint8Array()`** — Returns the archive as a `Uint8Array` *(works everywhere)*.
 - **`toBlob()`** — Returns a `Blob` with MIME type `application/vnd.opa+zip` *(browser)*.
 - **`toBuffer()`** — Returns a Node.js `Buffer` *(Node.js)*.
 - **`writeToFile(path)`** — Write the archive to disk *(Node.js only)*.
 
-All methods except the async Node.js ones are synchronous. The builder supports method chaining.
+#### Output (signed, Node.js only)
+
+- **`toSignedUint8Array(privateKeyPEM, certificatePEM)`** — Returns a signed archive as a `Uint8Array`. Async.
+- **`writeSignedToFile(path, privateKeyPEM, certificatePEM)`** — Write a signed archive to disk. Async.
+
+Signing adds `META-INF/SIGNATURE.SF` and `META-INF/SIGNATURE.RSA` (or `.EC`) to the archive following the [JAR signing convention](https://github.com/shannah/opa-spec/blob/main/specification/security.md#signing). The manifest is enhanced with per-entry SHA-256 digests.
+
+### `verifyOpaArchive(data, certificatePEM?)`
+
+Verify a signed OPA archive *(Node.js only)*. Returns a promise.
+
+```js
+import { verifyOpaArchive } from 'opa-js';
+
+const result = await verifyOpaArchive(archiveBytes, certificatePEM);
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `valid` | `boolean` | `true` if all checks pass |
+| `signed` | `boolean` | `true` if the archive contains signature files |
+| `error` | `string?` | Description of the first failure (if any) |
+
+Verification checks:
+1. PKCS#7 digital signature on `SIGNATURE.SF` (if certificate provided)
+2. SHA-256 digest of `MANIFEST.MF` matches `SIGNATURE.SF`
+3. Per-entry section digests in `SIGNATURE.SF` match `MANIFEST.MF`
+4. Actual file contents match SHA-256 digests in `MANIFEST.MF`
+
+Unsigned archives return `{ valid: true, signed: false }`.
 
 ### `new SessionHistory(sessionId?)`
 
@@ -121,7 +173,7 @@ archive.setSession(session);
 
 - **`addMessage(role, content, options?)`** — Add a message.
   - `role`: `user`, `assistant`, `system`, or `tool`
-  - `content`: string or array of [content blocks](./RFC-0001-OPA.md#722-content-blocks)
+  - `content`: string or array of content blocks
   - `options.id`: message ID (auto-incremented if omitted)
   - `options.timestamp`: ISO 8601 (defaults to now)
   - `options.metadata`: arbitrary metadata object
@@ -137,6 +189,20 @@ archive
   .setAgentHint('claude-sonnet')
   .setExecutionMode('batch')
   .setCreatedBy('my-app 1.0');
+```
+
+## Generating signing keys
+
+To create a self-signed RSA key pair for testing:
+
+```bash
+openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/CN=My Name"
+```
+
+For EC keys:
+
+```bash
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/CN=My Name"
 ```
 
 ## Example
@@ -170,6 +236,8 @@ npm test
 | `dist/opa.min.js` | ~12 KB | ESM import (browser, no bundler) |
 | `dist/opa.umd.min.js` | ~13 KB | `<script>` tag (global `OPA`) |
 | `src/index.js` | ~6 KB | Bundler or Node.js (fflate resolved separately) |
+
+Note: Signing and verification require Node.js (they use the built-in `crypto` module). The browser bundles support archive creation but not signing.
 
 ## License
 
