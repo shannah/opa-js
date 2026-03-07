@@ -1,0 +1,28 @@
+{
+  "name": "opa-js",
+  "version": "0.1.0",
+  "description": "Minimal, portable JavaScript library for creating Open Prompt Archive (OPA) files",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src/"
+  ],
+  "scripts": {
+    "test": "node test/test.js"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2"
+  },
+  "keywords": [
+    "opa",
+    "open-prompt-archive",
+    "ai",
+    "prompt",
+    "archive",
+    "zip"
+  ],
+  "license": "MIT"
+}
