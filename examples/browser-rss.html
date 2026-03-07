@@ -88,15 +88,8 @@
     Open it with any OPA-compatible client to execute.
   </p>
 
-  <script type="importmap">
-  {
-    "imports": {
-      "fflate": "https://esm.sh/fflate@0.8.2"
-    }
-  }
-  </script>
   <script type="module">
-    import { OpaArchive } from '../src/index.js';
+    import { OpaArchive } from '../dist/opa.min.js';
 
     function setStatus(msg, type) {
       const el = document.getElementById('status');

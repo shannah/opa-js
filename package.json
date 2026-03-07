@@ -8,11 +8,13 @@
     ".": "./src/index.js"
   },
   "files": [
-    "src/"
+    "src/",
+    "dist/"
   ],
   "scripts": {
+    "build": "esbuild src/index.js --bundle --format=esm --minify --external:node:fs/promises --external:node:path --outfile=dist/opa.min.js && esbuild src/index.js --bundle --format=iife --global-name=OPA --minify --external:node:fs/promises --external:node:path --outfile=dist/opa.umd.min.js",
     "test": "node test/test.js",
-    "example": "node examples/serve.js"
+    "example": "npm run build && node examples/serve.js"
   },
   "dependencies": {
     "fflate": "^0.8.2"
@@ -25,5 +27,8 @@
     "archive",
     "zip"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.27.3"
+  }
 }
