@@ -89,7 +89,15 @@
   </p>
 
   <script type="module">
-    import { OpaArchive } from '../dist/opa.min.js';
+    import { OpaArchive, generateSigningKey, getPublicKeyFingerprint } from '../dist/opa.min.js';
+
+    // Generate a signing key pair on first load
+    let signingKeys = null;
+    (async () => {
+      signingKeys = await generateSigningKey();
+      const fp = await getPublicKeyFingerprint(signingKeys.publicKey);
+      console.log('Signing key fingerprint:', fp);
+    })();
 
     function setStatus(msg, type) {
       const el = document.getElementById('status');
@@ -189,7 +197,8 @@
         archive.addDataFile('feed.txt', feedText);
         archive.addDataFile('feed-raw.xml', xml);
 
-        const blob = archive.toBlob();
+        setStatus('Signing archive…', 'info');
+        const blob = await archive.toSignedBlob(signingKeys.privateKey, signingKeys.publicKey);
         const filename = feedTitle.replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase().slice(0, 40) + '.opa';
 
         // Trigger download
