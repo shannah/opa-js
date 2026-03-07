@@ -408,6 +408,133 @@ await test('signed archive with session history verifies correctly', async () =>
 // Cleanup test keys
 await rm(testKeyDir, { recursive: true });
 
+// ── Browser signing (Web Crypto API) ──
+
+import { generateSigningKey, getPublicKeyFingerprint } from '../src/browser-signing.js';
+
+console.log('\nBrowser signing tests (Web Crypto)\n');
+
+await test('generateSigningKey produces a CryptoKey pair', async () => {
+  const { privateKey, publicKey } = await generateSigningKey();
+  assert(privateKey instanceof CryptoKey);
+  assert(publicKey instanceof CryptoKey);
+  assert.equal(privateKey.type, 'private');
+  assert.equal(publicKey.type, 'public');
+  assert.equal(privateKey.extractable, false, 'private key should be non-extractable');
+  assert.equal(publicKey.extractable, true, 'public key should be extractable');
+});
+
+await test('getPublicKeyFingerprint returns consistent sha256 fingerprint', async () => {
+  const { publicKey } = await generateSigningKey();
+  const fp1 = await getPublicKeyFingerprint(publicKey);
+  const fp2 = await getPublicKeyFingerprint(publicKey);
+  assert.equal(fp1, fp2);
+  assert(fp1.startsWith('sha256:'), `Expected sha256: prefix, got: ${fp1}`);
+  assert.equal(fp1.length, 7 + 64, 'Expected sha256: + 64 hex chars');
+});
+
+await test('browser-signed archive contains SIGNATURE.SF and SIGNATURE.EC', async () => {
+  const { privateKey, publicKey } = await generateSigningKey();
+  const archive = new OpaArchive({ title: 'Browser Signed' });
+  archive.setPrompt('Browser signed prompt.');
+  archive.addDataFile('notes.txt', 'test data');
+
+  const data = await archive.toSignedUint8Array(privateKey, publicKey);
+  const zip = unzipSync(data);
+
+  assert(zip['META-INF/SIGNATURE.SF'], 'Missing SIGNATURE.SF');
+  assert(zip['META-INF/SIGNATURE.EC'], 'Missing SIGNATURE.EC');
+  assert(!zip['META-INF/SIGNATURE.RSA'], 'Should not have SIGNATURE.RSA');
+
+  const sf = strFromU8(zip['META-INF/SIGNATURE.SF']);
+  assert(sf.includes('Signature-Version: 1.0'));
+  assert(sf.includes('SHA-256-Digest-Manifest:'));
+  assert(sf.includes('Name: prompt.md'));
+  assert(sf.includes('Name: data/notes.txt'));
+});
+
+await test('browser-signed archive verifies without providing key (TOFU)', async () => {
+  const { privateKey, publicKey } = await generateSigningKey();
+  const archive = new OpaArchive({ title: 'TOFU Test' });
+  archive.setPrompt('Verify without key.');
+
+  const data = await archive.toSignedUint8Array(privateKey, publicKey);
+  const result = await verifyOpaArchive(data);
+
+  assert.equal(result.valid, true, `Expected valid but got: ${result.error}`);
+  assert.equal(result.signed, true);
+  assert(result.publicKeyFingerprint, 'Expected publicKeyFingerprint in result');
+  assert(result.publicKeyFingerprint.startsWith('sha256:'));
+});
+
+await test('browser-signed archive verifies with provided public key', async () => {
+  const { privateKey, publicKey } = await generateSigningKey();
+  const archive = new OpaArchive();
+  archive.setPrompt('Verify with key.');
+  archive.addDataFile('data.csv', 'a,b\n1,2');
+
+  const data = await archive.toSignedUint8Array(privateKey, publicKey);
+  const result = await verifyOpaArchive(data, publicKey);
+
+  assert.equal(result.valid, true, `Expected valid but got: ${result.error}`);
+  assert.equal(result.signed, true);
+});
+
+await test('browser-signed archive detects tampering', async () => {
+  const { privateKey, publicKey } = await generateSigningKey();
+  const archive = new OpaArchive();
+  archive.setPrompt('Original browser prompt.');
+
+  const data = await archive.toSignedUint8Array(privateKey, publicKey);
+  const zip = unzipSync(data);
+
+  // Tamper with the prompt
+  zip['prompt.md'] = new TextEncoder().encode('Tampered!');
+
+  const { zipSync: rezip } = await import('fflate');
+  const tampered = rezip(zip, { level: 6 });
+
+  const result = await verifyOpaArchive(tampered);
+  assert.equal(result.valid, false);
+  assert.equal(result.signed, true);
+});
+
+await test('browser-signed archive fingerprint matches generated key', async () => {
+  const { privateKey, publicKey } = await generateSigningKey();
+  const expectedFP = await getPublicKeyFingerprint(publicKey);
+
+  const archive = new OpaArchive();
+  archive.setPrompt('Fingerprint test.');
+
+  const data = await archive.toSignedUint8Array(privateKey, publicKey);
+  const result = await verifyOpaArchive(data);
+
+  assert.equal(result.publicKeyFingerprint, expectedFP);
+});
+
+await test('browser-signed archive with session history verifies', async () => {
+  const { privateKey, publicKey } = await generateSigningKey();
+  const session = new SessionHistory('browser-session');
+  session.addMessage('user', 'Hello from browser');
+  session.addMessage('assistant', 'Hi!');
+
+  const archive = new OpaArchive();
+  archive.setPrompt('Browser session test.');
+  archive.setSession(session);
+  archive.addDataFile('info.txt', 'Some info');
+
+  const data = await archive.toSignedUint8Array(privateKey, publicKey);
+  const result = await verifyOpaArchive(data);
+
+  assert.equal(result.valid, true, `Expected valid but got: ${result.error}`);
+  assert.equal(result.signed, true);
+
+  const zip = unzipSync(data);
+  const sf = strFromU8(zip['META-INF/SIGNATURE.SF']);
+  assert(sf.includes('Name: session/history.json'));
+  assert(sf.includes('Name: data/info.txt'));
+});
+
 // ── Summary ──
 
 console.log(`\n${passed} passed, ${failed} failed`);

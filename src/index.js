@@ -1,6 +1,8 @@
 import { zipSync, strToU8 } from 'fflate';
 import { signArchiveFiles, verifyArchive } from './signing.js';
 
+export { generateSigningKey, getPublicKeyFingerprint } from './browser-signing.js';
+
 const OPA_VERSION = '0.1';
 const MANIFEST_VERSION = '1.0';
 
@@ -275,15 +277,35 @@ export class OpaArchive {
 
   /**
    * Build a signed archive and return it as a Uint8Array (Node.js only).
-   * @param {string} privateKeyPEM - PEM-encoded private key (RSA or EC).
-   * @param {string} certificatePEM - PEM-encoded X.509 certificate.
+   * @param {string|CryptoKey} privateKey - PEM string (Node.js) or CryptoKey (browser).
+   * @param {string|CryptoKey} certOrPublicKey - PEM certificate (Node.js) or CryptoKey public key (browser).
    * @returns {Promise<Uint8Array>}
    */
-  async toSignedUint8Array(privateKeyPEM, certificatePEM) {
+  async toSignedUint8Array(privateKey, certOrPublicKey) {
     const files = this._collectFiles();
     const mainManifest = this._buildManifest();
-    await signArchiveFiles(files, mainManifest, privateKeyPEM, certificatePEM, this._createdBy);
+
+    if (typeof privateKey === 'string') {
+      // Node.js: PEM strings
+      await signArchiveFiles(files, mainManifest, privateKey, certOrPublicKey, this._createdBy);
+    } else {
+      // Browser: CryptoKey objects
+      const { signArchiveFilesBrowser } = await import('./browser-signing.js');
+      await signArchiveFilesBrowser(files, mainManifest, privateKey, certOrPublicKey, this._createdBy);
+    }
+
     return zipSync(files, { level: 6 });
+  }
+
+  /**
+   * Build a signed archive and return it as a Blob (browser).
+   * @param {CryptoKey} privateKey - ECDSA P-256 private key.
+   * @param {CryptoKey} publicKey - ECDSA P-256 public key.
+   * @returns {Promise<Blob>}
+   */
+  async toSignedBlob(privateKey, publicKey) {
+    const data = await this.toSignedUint8Array(privateKey, publicKey);
+    return new Blob([data], { type: 'application/vnd.opa+zip' });
   }
 
   /**
@@ -326,13 +348,26 @@ export class OpaArchive {
 
 /**
  * Verify a signed OPA archive.
+ *
+ * Accepts either a PEM certificate string (Node.js path) or a CryptoKey
+ * (browser path). If no key is provided, the certificate is extracted from
+ * the PKCS#7 signature block and the result includes a publicKeyFingerprint
+ * for trust-on-first-use (TOFU) decisions.
+ *
  * @param {Uint8Array} data - The archive bytes.
- * @param {string} [certificatePEM] - PEM certificate to verify the signature against.
- *   If omitted, only digest integrity is checked.
- * @returns {Promise<{ valid: boolean, signed: boolean, error?: string }>}
+ * @param {string|CryptoKey} [certOrPublicKey] - PEM cert, CryptoKey, or omit to extract from archive.
+ * @returns {Promise<{ valid: boolean, signed: boolean, error?: string, publicKeyFingerprint?: string }>}
  */
-export async function verifyOpaArchive(data, certificatePEM) {
+export async function verifyOpaArchive(data, certOrPublicKey) {
   const { unzipSync: unzip } = await import('fflate');
-  const entries = unzip(data);
-  return verifyArchive(entries, certificatePEM);
+  const entries = unzip(data instanceof Uint8Array ? data : new Uint8Array(data));
+
+  if (typeof certOrPublicKey === 'string') {
+    // PEM string → Node.js verification path
+    return verifyArchive(entries, certOrPublicKey);
+  }
+
+  // CryptoKey or no key → browser-compatible verification path
+  const { verifyArchiveBrowser } = await import('./browser-signing.js');
+  return verifyArchiveBrowser(entries, certOrPublicKey);
 }

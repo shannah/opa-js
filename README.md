@@ -47,6 +47,42 @@ console.log(result);
 // { valid: true, signed: true }
 ```
 
+### Signed archive (Browser — Web Crypto)
+
+Uses the Web Crypto API with non-extractable ECDSA P-256 keys. The private key never leaves the browser's secure key store.
+
+```js
+import { OpaArchive, generateSigningKey, getPublicKeyFingerprint, verifyOpaArchive } from 'opa-js';
+
+// Generate a key pair (store in IndexedDB for reuse)
+const { privateKey, publicKey } = await generateSigningKey();
+
+// Get the fingerprint for TOFU trust decisions
+const fingerprint = await getPublicKeyFingerprint(publicKey);
+console.log(fingerprint); // "sha256:a3f8b2c1..."
+
+// Create and sign
+const archive = new OpaArchive({ title: 'Browser Signed' });
+archive.setPrompt('Analyze the data.');
+archive.addDataFile('report.csv', csvString);
+
+const blob = await archive.toSignedBlob(privateKey, publicKey);
+
+// Download the signed .opa file
+const a = document.createElement('a');
+a.href = URL.createObjectURL(blob);
+a.download = 'task.opa';
+a.click();
+```
+
+Verification extracts the certificate from the PKCS#7 block and returns the public key fingerprint:
+
+```js
+const result = await verifyOpaArchive(archiveBytes);
+console.log(result);
+// { valid: true, signed: true, publicKeyFingerprint: "sha256:a3f8b2c1..." }
+```
+
 ### Browser (with bundler — Vite, webpack, etc.)
 
 ```js
@@ -129,21 +165,26 @@ All options are optional.
 - **`toBuffer()`** — Returns a Node.js `Buffer` *(Node.js)*.
 - **`writeToFile(path)`** — Write the archive to disk *(Node.js only)*.
 
-#### Output (signed, Node.js only)
+#### Output (signed)
 
-- **`toSignedUint8Array(privateKeyPEM, certificatePEM)`** — Returns a signed archive as a `Uint8Array`. Async.
-- **`writeSignedToFile(path, privateKeyPEM, certificatePEM)`** — Write a signed archive to disk. Async.
+- **`toSignedUint8Array(privateKey, certOrPublicKey)`** — Returns a signed archive as a `Uint8Array`. Auto-detects PEM strings (Node.js) vs CryptoKey objects (browser). Async.
+- **`toSignedBlob(privateKey, publicKey)`** — Returns a signed `Blob` *(browser)*. Async.
+- **`writeSignedToFile(path, privateKeyPEM, certificatePEM)`** — Write a signed archive to disk *(Node.js only)*. Async.
 
 Signing adds `META-INF/SIGNATURE.SF` and `META-INF/SIGNATURE.RSA` (or `.EC`) to the archive following the [JAR signing convention](https://github.com/shannah/opa-spec/blob/main/specification/security.md#signing). The manifest is enhanced with per-entry SHA-256 digests.
 
-### `verifyOpaArchive(data, certificatePEM?)`
+### `verifyOpaArchive(data, certOrPublicKey?)`
 
-Verify a signed OPA archive *(Node.js only)*. Returns a promise.
+Verify a signed OPA archive. Works in both Node.js and the browser. Returns a promise.
 
 ```js
 import { verifyOpaArchive } from 'opa-js';
 
+// Node.js: pass PEM certificate
 const result = await verifyOpaArchive(archiveBytes, certificatePEM);
+
+// Browser: pass CryptoKey, or omit to extract from embedded certificate (TOFU)
+const result = await verifyOpaArchive(archiveBytes);
 ```
 
 | Field | Type | Description |
@@ -151,14 +192,33 @@ const result = await verifyOpaArchive(archiveBytes, certificatePEM);
 | `valid` | `boolean` | `true` if all checks pass |
 | `signed` | `boolean` | `true` if the archive contains signature files |
 | `error` | `string?` | Description of the first failure (if any) |
+| `publicKeyFingerprint` | `string?` | SHA-256 fingerprint of the signer's public key (browser path) |
 
 Verification checks:
-1. PKCS#7 digital signature on `SIGNATURE.SF` (if certificate provided)
+1. PKCS#7 digital signature on `SIGNATURE.SF`
 2. SHA-256 digest of `MANIFEST.MF` matches `SIGNATURE.SF`
 3. Per-entry section digests in `SIGNATURE.SF` match `MANIFEST.MF`
 4. Actual file contents match SHA-256 digests in `MANIFEST.MF`
 
 Unsigned archives return `{ valid: true, signed: false }`.
+
+### `generateSigningKey()`
+
+Generate an ECDSA P-256 key pair for browser signing. The private key is non-extractable.
+
+```js
+const { privateKey, publicKey } = await generateSigningKey();
+// Store in IndexedDB for persistence across sessions
+```
+
+### `getPublicKeyFingerprint(publicKey)`
+
+Compute a SHA-256 fingerprint of a public key for trust-on-first-use (TOFU) decisions.
+
+```js
+const fingerprint = await getPublicKeyFingerprint(publicKey);
+// "sha256:a3f8b2c1d4e5..."
+```
 
 ### `new SessionHistory(sessionId?)`
 
@@ -237,7 +297,7 @@ npm test
 | `dist/opa.umd.min.js` | ~13 KB | `<script>` tag (global `OPA`) |
 | `src/index.js` | ~6 KB | Bundler or Node.js (fflate resolved separately) |
 
-Note: Signing and verification require Node.js (they use the built-in `crypto` module). The browser bundles support archive creation but not signing.
+Signing works in both environments: Node.js uses PEM keys with the built-in `crypto` module; browsers use the Web Crypto API with ECDSA P-256 keys.
 
 ## License
 
