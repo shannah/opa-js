@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OPA RSS Summarizer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      max-width: 640px;
+      margin: 40px auto;
+      padding: 0 20px;
+      color: #1a1a1a;
+      background: #fafafa;
+    }
+    h1 { font-size: 1.4rem; margin-bottom: 4px; }
+    .subtitle { color: #666; margin-bottom: 24px; font-size: 0.9rem; }
+    label { display: block; font-weight: 600; margin-bottom: 4px; font-size: 0.85rem; }
+    input[type="text"] {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      margin-bottom: 16px;
+    }
+    input:focus { outline: none; border-color: #4a90d9; box-shadow: 0 0 0 2px rgba(74,144,217,0.2); }
+    button {
+      background: #2563eb;
+      color: white;
+      border: none;
+      padding: 10px 24px;
+      border-radius: 6px;
+      font-size: 0.95rem;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    button:hover { background: #1d4ed8; }
+    button:disabled { background: #93b4e8; cursor: not-allowed; }
+    #status {
+      margin-top: 16px;
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      display: none;
+    }
+    #status.info { display: block; background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; }
+    #status.error { display: block; background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+    #status.success { display: block; background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+    .note { font-size: 0.8rem; color: #888; margin-top: 24px; line-height: 1.5; }
+    .preview { margin-top: 20px; display: none; }
+    .preview h2 { font-size: 1rem; margin-bottom: 8px; }
+    .preview pre {
+      background: #f3f4f6;
+      padding: 12px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      overflow-x: auto;
+      max-height: 300px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+  </style>
+</head>
+<body>
+  <h1>OPA RSS Summarizer</h1>
+  <p class="subtitle">
+    Fetch an RSS feed, package it with a summarization prompt, and download as an OPA file.
+  </p>
+
+  <label for="feed-url">RSS Feed URL</label>
+  <input type="text" id="feed-url" value="https://hnrss.org/newest?count=20" />
+
+  <button id="generate" onclick="run()">Generate OPA File</button>
+
+  <div id="status"></div>
+
+  <div class="preview" id="preview">
+    <h2>Prompt</h2>
+    <pre id="prompt-text"></pre>
+  </div>
+
+  <p class="note">
+    The generated <code>.opa</code> file contains the RSS feed as a data asset and a prompt
+    asking an AI agent to summarize the feed and highlight one article relevant to AI.
+    Open it with any OPA-compatible client to execute.
+  </p>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "fflate": "https://esm.sh/fflate@0.8.2"
+    }
+  }
+  </script>
+  <script type="module">
+    import { OpaArchive } from '../src/index.js';
+
+    function setStatus(msg, type) {
+      const el = document.getElementById('status');
+      el.textContent = msg;
+      el.className = type;
+    }
+
+    function parseRSS(xmlText) {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(xmlText, 'text/xml');
+
+      const errorNode = doc.querySelector('parsererror');
+      if (errorNode) throw new Error('Invalid RSS XML');
+
+      const channel = doc.querySelector('channel');
+      const feedTitle = channel?.querySelector('title')?.textContent || 'Unknown Feed';
+
+      const items = [];
+      for (const item of doc.querySelectorAll('item')) {
+        items.push({
+          title: item.querySelector('title')?.textContent || '',
+          link: item.querySelector('link')?.textContent || '',
+          description: item.querySelector('description')?.textContent || '',
+          pubDate: item.querySelector('pubDate')?.textContent || '',
+        });
+      }
+      return { feedTitle, items };
+    }
+
+    async function fetchFeed(url) {
+      // Try direct fetch first
+      try {
+        const res = await fetch(url);
+        if (res.ok) return await res.text();
+      } catch (_) { /* CORS likely blocked it */ }
+
+      // Fall back to allorigins CORS proxy
+      const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+      const res = await fetch(proxyUrl);
+      if (!res.ok) throw new Error(`Failed to fetch feed (status ${res.status})`);
+      return await res.text();
+    }
+
+    window.run = async function run() {
+      const btn = document.getElementById('generate');
+      const feedUrl = document.getElementById('feed-url').value.trim();
+      if (!feedUrl) { setStatus('Enter a feed URL.', 'error'); return; }
+
+      btn.disabled = true;
+      setStatus('Fetching RSS feed…', 'info');
+
+      try {
+        const xml = await fetchFeed(feedUrl);
+        setStatus('Parsing feed…', 'info');
+
+        const { feedTitle, items } = parseRSS(xml);
+        if (items.length === 0) throw new Error('No items found in feed.');
+
+        // Build a clean text version of the feed for the data asset
+        const feedText = items.map((it, i) =>
+          `## ${i + 1}. ${it.title}\n` +
+          `Link: ${it.link}\n` +
+          `Date: ${it.pubDate}\n` +
+          `${it.description}\n`
+        ).join('\n---\n\n');
+
+        const prompt = [
+          `# Summarize RSS Feed: ${feedTitle}`,
+          '',
+          `You have been given an RSS feed snapshot in \`data/feed.txt\` containing ${items.length} articles from "${feedTitle}".`,
+          '',
+          'Please:',
+          '',
+          '1. Write a concise summary (3-5 sentences) of the major themes and topics across all articles.',
+          '2. Highlight **one article** that you think would be most interesting to someone who follows AI and machine learning developments. Explain why you chose it.',
+          '3. List the top 5 articles by relevance to AI, with a one-sentence summary of each.',
+          '',
+          'Base your analysis only on the feed content provided in `data/feed.txt`.',
+        ].join('\n');
+
+        setStatus('Building OPA archive…', 'info');
+
+        const archive = new OpaArchive({
+          title: `RSS Summary: ${feedTitle}`,
+          description: `Summarize ${items.length} articles from ${feedTitle} with AI focus`,
+          executionMode: 'batch',
+          createdBy: 'opa-js/examples/browser-rss',
+        });
+
+        archive.setPrompt(prompt);
+        archive.addDataFile('feed.txt', feedText);
+        archive.addDataFile('feed-raw.xml', xml);
+
+        const blob = archive.toBlob();
+        const filename = feedTitle.replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase().slice(0, 40) + '.opa';
+
+        // Trigger download
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(a.href);
+
+        setStatus(`Downloaded ${filename} (${(blob.size / 1024).toFixed(1)} KB)`, 'success');
+
+        // Show prompt preview
+        document.getElementById('prompt-text').textContent = prompt;
+        document.getElementById('preview').style.display = 'block';
+
+      } catch (err) {
+        setStatus(`Error: ${err.message}`, 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    };
+  </script>
+</body>
+</html>
