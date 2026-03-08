@@ -14,7 +14,8 @@
   "scripts": {
     "build": "esbuild src/index.js --bundle --format=esm --minify --external:node:fs/promises --external:node:path --external:node:crypto --outfile=dist/opa.min.js && esbuild src/index.js --bundle --format=iife --global-name=OPA --minify --external:node:fs/promises --external:node:path --external:node:crypto --outfile=dist/opa.umd.min.js",
     "test": "node test/test.js",
-    "example": "npm run build && node examples/serve.js"
+    "example": "npm run build && node examples/serve.js",
+    "cli": "node examples/cli-rss.js"
   },
   "dependencies": {
     "fflate": "^0.8.2"
