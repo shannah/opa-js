@@ -265,15 +265,37 @@ For EC keys:
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/CN=My Name"
 ```
 
-## Example
+## Examples
 
-The repo includes a browser example that fetches an RSS feed and packages it into an OPA file:
+### Browser
+
+The repo includes an interactive browser example that fetches an RSS feed and packages it into a signed OPA file:
 
 ```
 npm run example
 ```
 
 Then open http://localhost:3000. See [`examples/browser-rss.html`](./examples/browser-rss.html).
+
+### CLI — RSS Summarizer
+
+Fetch any RSS feed and produce an unsigned OPA file from the command line:
+
+```
+node examples/cli-rss.js [feed-url] [-o output.opa]
+```
+
+Defaults to the Hacker News feed. Also available via `npm run cli`.
+
+### CLI — Pirate HN Summary (Signed)
+
+A standalone script that fetches the Hacker News RSS feed, packages it with a pirate-themed summarization prompt, generates a signing key, and writes a signed `.opa` file:
+
+```
+node examples/hn-pirate.js
+```
+
+Outputs `hn-pirate-summary.opa` in the current directory.
 
 ## Build
 
