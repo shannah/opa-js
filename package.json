@@ -1,0 +1,40 @@
+{
+  "name": "opa-js",
+  "version": "0.1.0",
+  "description": "Minimal, portable JavaScript library for creating Open Prompt Archive (OPA) files",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src/",
+    "dist/"
+  ],
+  "scripts": {
+    "build": "esbuild src/index.js --bundle --format=esm --minify --external:node:fs/promises --external:node:path --external:node:crypto --outfile=dist/opa.min.js && esbuild src/index.js --bundle --format=iife --global-name=OPA --minify --external:node:fs/promises --external:node:path --external:node:crypto --outfile=dist/opa.umd.min.js",
+    "test": "node test/test.js",
+    "example": "npm run build && node examples/serve.js",
+    "cli": "node examples/cli-rss.js",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2"
+  },
+  "keywords": [
+    "opa",
+    "open-prompt-archive",
+    "ai",
+    "prompt",
+    "archive",
+    "zip"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shannah/opa-js.git"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.27.3"
+  }
+}
